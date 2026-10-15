@@ -111,6 +111,12 @@ COPY usr/ usr/
 # the structure packages expect is preserved, not the state.
 # Mind `void`: its mode is 0111 on purpose (it is a "void" used as a mount point).
 #
+# The PACKAGE DATABASE is the exception that is not just a skeleton. ADR 0015 requires the package
+# database to be image content, not state: without it a derived image installs blindly. Measured on
+# this base before the change, installing curl would install 35 packages of which 34 were already
+# on disk, because dpkg knew nothing. So the database is copied into /usr before the wipe, and dpkg
+# and apt are pointed at the copy. The RPM family does the same thing with /usr/lib/sysimage/rpm.
+#
 # MEASURED EXCEPTION: restoring directories only leaves half-initialized what needs to be
 # initialized coherently. flatpak expects /var/lib/flatpak/repo with its `config` file, and with
 # the directory tree alone, `flatpak preinstall` fails with
@@ -121,6 +127,11 @@ COPY usr/ usr/
 RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     install -d /usr/share/deskos-ubuntu-base && \
     find /var -type d -printf '%m %u %g %p\n' | sort > /usr/share/deskos-ubuntu-base/var-skeleton && \
+    install -d /usr/lib/sysimage && cp -a /var/lib/dpkg /usr/lib/sysimage/dpkg && \
+    mkdir -p /etc/dpkg/dpkg.cfg.d && \
+    printf 'admindir=/usr/lib/sysimage/dpkg\n' > /etc/dpkg/dpkg.cfg.d/99-admindir && \
+    mkdir -p /etc/apt/apt.conf.d && \
+    printf 'Dir::State::status "/usr/lib/sysimage/dpkg/status";\n' > /etc/apt/apt.conf.d/99-admindir && \
     echo "HOME=/var/home" | tee -a "/etc/default/useradd" && \
     /ctx/shared/bootc-rootfs.sh && \
     while read -r m u g p; do install -d -m "$m" -o "$u" -g "$g" "$p"; done < /usr/share/deskos-ubuntu-base/var-skeleton && \

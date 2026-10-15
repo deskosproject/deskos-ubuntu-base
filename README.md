@@ -62,6 +62,15 @@ Everything below is **measured** (the recipe was built, installed to disk and bo
    but missing its `config` file, `flatpak preinstall` fails with `opening repo: openat(config): No
    such file or directory`. If the directory does not exist, flatpak creates the whole thing.
    **Measured: with the exclusion, DeskOS's unit installs the app.**
+9. **The package database is image content, not state** (ADR 0015). `rm -rf /var` took
+   `/var/lib/dpkg` with it, so a derived image installed blindly: installing `curl` pulled **35
+   packages, 34 of them already on disk**, because dpkg knew nothing. The database is now copied into
+   `/usr/lib/sysimage/dpkg` before the wipe (the RPM family keeps its own at
+   `/usr/lib/sysimage/rpm`), with `admindir=` in `/etc/dpkg/dpkg.cfg.d/` and `Dir::State::status` in
+   `/etc/apt/apt.conf.d/`. **Measured: `dpkg -l` reports 1519 packages, `curl` resolves to 1 package,
+   `jq` to 0, and a derived `FROM` this base installing `jq` reports "already the newest version".**
+   The database lives in `/usr`, so on a booted machine it is readable but not writable: `apt` is a
+   build-time tool here, not a way to change a running workstation.
 
 ## Verified status
 
@@ -78,6 +87,7 @@ Everything below is **measured** (the recipe was built, installed to disk and bo
 | snap: trivial apps (`hello-world`) | OK |
 | **snap: Firefox** | **OK** — `/snap/firefox/9057/usr/lib/firefox/firefox` running, 18 AppArmor profiles, UI in Spanish |
 | `apparmor.service` on first boot | OK |
+| **Package database** | OK — `dpkg -l` reports 1519 packages from `/usr/lib/sysimage/dpkg`; a derived image installs incrementally (`curl`: 1 package, `jq`: 0) |
 | Secure boot | not verified (the kernel is signed, `systemd-boot` is not) |
 | Intune / CrowdStrike / VPN | **not verifiable outside a real corporate environment** |
 
