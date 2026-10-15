@@ -1,0 +1,6 @@
+# artefactos de prueba
+*.raw
+*.img
+*.qcow2
+OVMF_VARS*.fd
+*.log
