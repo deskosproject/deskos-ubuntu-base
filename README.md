@@ -2,12 +2,14 @@
 
 **Ubuntu 26.04 LTS as a bootc image with GNOME**, maintained by the DeskOS project.
 
-**Owner: the Project DeskOS. Support tier: `organization`.** Canonical publishes no Ubuntu bootc
-base, so this one is maintained by us and is not a Canonical-supported product. The Project DeskOS is
-the named owner accountable for this base, its fixes and its updates: fixes and updates are proposed
-as pull requests here and reviewed by the project, and the base is consumed by digest. `deskos-core`
-declares the same owner and tier in the `Platform` resource that points here (ADR 0014). See
-"Provenance" and "Verified status" to know what was tested and what was not.
+**Owner: the Project DeskOS. Support tier: `organization`.** Canonical publishes no Ubuntu bootc base,
+so DeskOS maintains this one — and *organization* is exactly what that tier means: nothing here is
+backed by the operating system's vendor, and the Project DeskOS is the named owner accountable for
+this base, its fixes and its updates. (The other tier is `vendor`, for a base the vendor itself
+publishes and supports, as Red Hat does for RHEL 10.) Fixes and updates are proposed as pull requests
+here and reviewed by the project, and the base is consumed by digest. `deskos-core` declares the same
+owner and tier in the `Platform` resource that points here (ADR 0014). See "Provenance" and "Verified
+status" to know what was tested and what was not.
 
 This repository is **not DeskOS Core**. It is the *base* DeskOS compiles onto: the Ubuntu bootc
 engineering (kernel, ostree/composefs, snapd, desktop) that someone has to maintain precisely
