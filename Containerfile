@@ -130,6 +130,17 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     rm -rf /var/lib/flatpak && \
     systemctl enable snap.mount home.mount root.mount opt.mount mnt.mount srv.mount
 
+# The upstream image is a *container*, and it carries a uid-1000 `ubuntu` account for `podman exec`.
+# This is a workstation base, and that account is not harmless: GDM starts GNOME Initial Setup only
+# when no user exists, and asks AccountsService, which counts it. Measured on 2026-10-16: the user
+# list AccountsService gave GDM was exactly `/org/freedesktop/Accounts/User1000`, so GDM drew its
+# greeter and the wizard never ran, while the package, the helper, the session file and the shell
+# mode were all present. Removing the account is what makes the wizard run, and what makes "this base
+# carries no account" true instead of "the one it carries cannot log in".
+RUN set -eux; \
+    userdel ubuntu; \
+    ! getent passwd ubuntu
+
 # Desktop bootstrap: the graphical target and the display manager. No account is created and no
 # session is automatic: GNOME Initial Setup creates the account and offers the language, the
 # timezone and the keyboard at first boot, which is what makes those choices per user. An
