@@ -56,15 +56,13 @@ Everything below is **measured** (the recipe was built, installed to disk and bo
    `en_US.UTF-8`. It cannot be done at runtime: `/usr/lib/locale` lives under a read-only `/usr`.
    The timezone and the keyboard are **not** pinned: GNOME Initial Setup chooses them per user at
    first boot.
-6. **No usable account, no autologin, and a first-boot wizard that does not start.** No account can
-   log in: the base creates none, and the `ubuntu` account the official Ubuntu container image ships
-   is inherited as it is — password locked (`!` in `/etc/shadow`), no home directory and no
-   `/etc/sudoers` entry, although it is a member of the `sudo` group. GDM does not offer it (no
-   home). The image carries everything GNOME Initial Setup needs — the package, the helper, the
-   session file and the shell mode — but the wizard **does not run** at first boot: GDM starts only
-   its greeter. Measured on 2026-10-16 by `deskos-core`'s `tests/vm/firstbootcheck.py`, which asks
-   the guest instead of reading a screenshot; **the cause is not established**, and until it is, this
-   base does not create the first account for a user.
+6. **No account, no autologin, and GNOME Initial Setup that runs.** The base creates no user: the
+   uid-1000 `ubuntu` account the upstream *container* image ships is removed (`userdel`, asserted at
+   build time). That was not cosmetic. GDM starts GNOME Initial Setup only when **no user exists**,
+   and it asks AccountsService, which counted that account — so the wizard never ran. Measured on
+   2026-10-16 by `deskos-core`'s `tests/vm/firstbootcheck.py`, which asks the guest instead of reading
+   a screenshot: with the account gone, the wizard is the session that comes up, and no account can
+   log in. An organization that provisions accounts itself suppresses the wizard in its own layer.
 7. **`/var` skeleton that `rm -rf /var` destroys.** Packages install directories under `/var`
    (snapd: `apparmor/snap-confine`, `void`, `hostfs`, `firstboot`, ...; ubuntu-advantage:
    `/var/lib/ubuntu-advantage`) and the recipe used to delete them. Measured effects:
@@ -99,9 +97,8 @@ Everything below is **measured** (the recipe was built, installed to disk and bo
 | `bootc container lint` | 11 checks passed, 1 skipped, 3 warnings — the same lint set as before, on the 2026-10-16 rebuild |
 | Install to disk (`--composefs-backend`) | OK — 2026-10-16 rebuild, installed out of a compressed OCI layout |
 | Boot from digest-verified ComposeFS | OK — the 2026-10-16 rebuild's ESP entry asks for it (`composefs.digest=…`); the mount flags seen inside the guest were measured on an earlier build, so `verity=require` as such is not re-asserted here |
-| Boots to GDM | OK — 2026-10-16 rebuild: the disk boots to GNOME's login screen |
-| First-boot wizard | **does not start** — measured 2026-10-16 by asking the guest (`deskos-core`'s `tests/vm/firstbootcheck.py`): no initial-setup session and no shell in the initial-setup mode, only GDM's greeter. The package, the helper, `gnome-initial-setup.session` and the shell mode are all present; the cause is **not established**. A screendump cannot tell this apart from a working first boot, because GDM's greeter draws a Username field too |
-| No usable account | OK — the image carries no account that can log in. The upstream container image's `ubuntu` account (uid 1000, in the `sudo` group) is inherited, but its password is locked, it has no home and no `/etc/sudoers` entry; GDM does not offer it |
+| Boot to GNOME Initial Setup | OK — 2026-10-16 rebuild: the wizard is the session that comes up, asserted by asking the guest (`deskos-core`'s `tests/vm/firstbootcheck.py`). It did **not** run before this base removed the inherited `ubuntu` account: GDM counts users through AccountsService, and that uid-1000 account suppressed it. A screendump could not tell the two apart, because GDM's greeter draws a Username field too |
+| No usable account | OK — the image carries no account at all: the upstream container image's `ubuntu` account is removed at build time |
 | Flatpak | **not in the image** (item 4): 26.04 has no `flatpak preinstall`, and carrying the PPA that would provide one is declined. Earlier runs, still with that PPA, measured Flatpak 1.18.4 running apps (bwrap under the `unpriv_bwrap` profile) and installing one at first boot; that is no longer this base's state |
 | GNOME + autologin | OK, measured **before** the autologin was removed; not re-measured since |
 | `bootc switch` / `rollback` | OK, measured on an earlier build. Note: rollback **needs two reboots** (the operation runs at the end of boot; the next boot uses the previous image). `/var` and `/etc` persist in both directions. |
