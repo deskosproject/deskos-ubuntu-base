@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+#
 # Ubuntu 26.04 LTS bootc + GNOME.
 #
 # Built on jmarrero/ubuntu-bootc (Apache-2.0) with the changes measured during the DeskOS spike.
@@ -6,13 +8,15 @@
 #  - libclang-dev in the builder (the build was broken at HEAD)
 #  - ubuntu-desktop-minimal + grim, with kdump-tools excluded (it broke the kernel configure step)
 #  - stock 26.04 kernel, without the questing 6.17 pin (the fsverity fix already landed)
-#  - flatpak >= 1.17 from the Flatpak team PPA (26.04 ships 1.16.6, which has no `preinstall`)
 #  - locale generated in the image, plus timezone and keyboard
 #  - first-login wizard suppressed
 #  - the /var skeleton that `rm -rf /var` destroys is saved before the wipe and restored after
 #
-# The last block replicates what DeskOS emits for a FlatpakSet, so the contract can be tested for
-# real instead of assumed.
+# Flatpak is deliberately absent, and this base carries no third-party apt source. 26.04 publishes
+# flatpak 1.16.6 and `flatpak preinstall` only exists since 1.17; the only source of a newer one was
+# the Flatpak team PPA, and a DeskOS base stays on its vendor's archive. A platform that wants a
+# system Flatpak channel needs a base that carries one and says so, which is that platform's
+# decision, not this base's.
 
 FROM scratch AS ctx
 COPY shared/ /shared
@@ -47,20 +51,12 @@ ARG DEBIAN_FRONTEND=noninteractive
 
 COPY --from=builder /output /
 
-# Flatpak team PPA: the 26.04 archive publishes 1.16.6 and `preinstall` only exists since 1.17.
-# This is a third-party PPA: a supply-chain decision, not Canonical's archive.
-RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
-    apt update -y && \
-    apt install -y software-properties-common gnupg && \
-    add-apt-repository -y ppa:flatpak/stable && \
-    apt clean -y
-
 # kdump-tools is excluded on purpose: it is a Recommends of ubuntu-desktop-minimal and its postinst
 # hook generates a crash-dump initramfs which dies inside a container build with
 # "mkinitramfs: failed to determine device for /", failing the kernel's configure step.
 RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root --mount=type=tmpfs,dst=/boot apt update -y && \
   apt install -y cloud-init nano snapd sudo openssh-server ubuntu-desktop-minimal grim kdump-tools- \
-    flatpak gnome-software-plugin-flatpak xdg-desktop-portal-gnome xdg-desktop-portal-gtk \
+    xdg-desktop-portal-gnome xdg-desktop-portal-gtk \
     btrfs-progs dosfstools e2fsprogs fdisk \
     linux-firmware linux-image-generic \
     podman skopeo systemd systemd-boot* xfsprogs ostree libostree-dev dracut whois bubblewrap && \
@@ -87,7 +83,7 @@ RUN ln -sf /usr/lib/systemd/system/ssh.service /etc/systemd/system/multi-user.ta
 # tmpfiles: resolv.conf and state directories.
 RUN mkdir -p /usr/lib/tmpfiles.d && \
     printf "L+ /etc/resolv.conf - - - - /run/systemd/resolve/stub-resolv.conf\n" > /usr/lib/tmpfiles.d/resolved-fix.conf && \
-    printf "d /var/lib/snapd 0755 root root -\nd /var/cache/snapd 0755 root root -\nd /var/snap 0755 root root -" | tee -a "/usr/lib/tmpfiles.d/bootc-base-dirs.conf"
+    printf "d /var/lib/snapd 0755 root root -\nd /var/cache/snapd 0755 root root -\nd /var/snap 0755 root root -\n" | tee -a "/usr/lib/tmpfiles.d/bootc-base-dirs.conf"
 
 # DHCP for ethernet interfaces
 RUN mkdir -p /etc/systemd/network/ && \
@@ -115,13 +111,11 @@ COPY usr/ usr/
 # on disk, because dpkg knew nothing. So the database is copied into /usr before the wipe, and dpkg
 # and apt are pointed at the copy. The RPM family does the same thing with /usr/lib/sysimage/rpm.
 #
-# MEASURED EXCEPTION: restoring directories only leaves half-initialized what needs to be
-# initialized coherently. flatpak expects /var/lib/flatpak/repo with its `config` file, and with
-# the directory tree alone, `flatpak preinstall` fails with
-# "opening repo: openat(config): No such file or directory". If the directory does NOT exist,
-# flatpak creates the whole thing. So it is removed: measured, with the directory gone DeskOS's
-# unit installs the app. General rule: if a tool fails with "no such file" over a config file
-# inside a /var directory, that directory belongs in this list.
+# General rule from the flatpak case: restoring directories only leaves half-initialized what a tool
+# has to initialize coherently. With /var/lib/flatpak/repo present but its `config` file missing,
+# flatpak fails with "opening repo: openat(config): No such file or directory"; with the directory
+# absent it creates the whole thing. A directory a tool fails on with "no such file" over a config
+# file inside it belongs in this list.
 RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     install -d /usr/share/deskos-ubuntu-base && \
     find /var -type d -printf '%m %u %g %p\n' | sort > /usr/share/deskos-ubuntu-base/var-skeleton && \
@@ -152,17 +146,6 @@ RUN set -eux; \
     test -n "$dm"; \
     echo "display manager: $dm"; \
     systemctl enable "$dm"
-
-# The Flathub remote, so the base is useful on its own. An organization's own
-# remotes come from DeskOS's FlatpakRemote resource, which the plan renders.
-#
-# The preinstall unit and the preinstall.d entries are deliberately absent: DeskOS
-# emits deskos-flatpak-preinstall.service itself, with the applications a FlatpakSet
-# declares. A replica here would have the same unit name and would mask whether the
-# rendered one works.
-RUN set -eux; \
-    install -d /etc/flatpak/remotes.d; \
-    printf '[Flatpak Repo]\nTitle=Flathub\nUrl=https://dl.flathub.org/repo/\nHomepage=https://flathub.org/\n' > /etc/flatpak/remotes.d/flathub.flatpakrepo
 
 LABEL containers.bootc 1
 
