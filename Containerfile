@@ -67,14 +67,12 @@ RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root --mount=type=tmpfs,
   cp /boot/vmlinuz-* "$(find /usr/lib/modules -maxdepth 1 -type d | tail -n 1)/vmlinuz" && \
   apt clean -y
 
-# Locale generated in the image: it cannot be done at runtime (/usr/lib/locale lives under a
-# read-only /usr). Timezone and Latin American keyboard.
-# Pending design work: locale, timezone and keyboard must be selectable per region and per user.
-RUN echo "es_EC.UTF-8 UTF-8" >> /etc/locale.gen && locale-gen && \
-    printf 'LANG=es_EC.UTF-8\n' > /etc/default/locale && \
-    ln -sf /usr/share/zoneinfo/America/Guayaquil /etc/localtime && \
-    printf 'America/Guayaquil\n' > /etc/timezone && \
-    printf 'XKBMODEL="pc105"\nXKBLAYOUT="latam"\nXKBVARIANT=""\nXKBOPTIONS=""\nBACKSPACE="guess"\n' > /etc/default/keyboard
+# Locales generated in the image: it cannot be done at runtime (/usr/lib/locale lives under a
+# read-only /usr). The image defaults to en_US.UTF-8 and generates the ones a region may pick. The
+# language, the timezone and the keyboard are chosen per user by GNOME Initial Setup at first
+# boot, or by an organization's own layer; nothing else is pinned here.
+RUN printf 'en_US.UTF-8 UTF-8\nes_EC.UTF-8 UTF-8\n' >> /etc/locale.gen && locale-gen && \
+    printf 'LANG=en_US.UTF-8\n' > /etc/default/locale
 
 # cloud-init: growpart on /sysroot, default home, networking left to systemd-networkd
 RUN mkdir -p /etc/cloud/cloud.cfg.d && \
@@ -138,13 +136,14 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     rm -rf /var/lib/flatpak && \
     systemctl enable snap.mount home.mount root.mount opt.mount mnt.mount srv.mount
 
-# Desktop bootstrap: user, GDM with autologin, and first-login wizard suppression.
-# The physical home stays in /var/home/poc (bootc convention), but the passwd entry points to
-# /home/poc because snap requires a home under /home. It moves no files: /home is a bind mount of
-# /var/home, so /home/poc and /var/home/poc are the same directory.
+# Desktop bootstrap: the graphical target and the display manager. No account is created and no
+# session is automatic: GNOME Initial Setup creates the account and offers the language, the
+# timezone and the keyboard at first boot, which is what makes those choices per user. An
+# organization that provisions accounts itself suppresses the wizard in its own layer.
+#
+# Homes live under /home because snap requires it: /home is a bind mount of /var/home, so an
+# account created with the default home path gets one snap can use.
 RUN set -eux; \
-    useradd -m -G sudo,adm,video,audio -s /bin/bash poc; \
-    usermod -d /home/poc poc; \
     systemctl set-default graphical.target; \
     dm=""; \
     for u in gdm3 gdm lightdm; do \
@@ -152,28 +151,18 @@ RUN set -eux; \
     done; \
     test -n "$dm"; \
     echo "display manager: $dm"; \
-    systemctl enable "$dm"; \
-    for d in /etc/gdm3 /etc/gdm; do \
-        if [ -d "$d" ]; then \
-            printf '[daemon]\nAutomaticLoginEnable=true\nAutomaticLogin=poc\n' > "$d/custom.conf"; \
-        fi; \
-    done; \
-    install -d -m 0755 /var/lib; \
-    touch /var/lib/gnome-initial-setup-done; \
-    install -d -o poc -g poc /var/home/poc/.config; \
-    touch /var/home/poc/.config/gnome-initial-setup-done; \
-    chown poc:poc /var/home/poc/.config/gnome-initial-setup-done
+    systemctl enable "$dm"
 
-# Replica of what DeskOS emits for a FlatpakRemote + FlatpakSet + unit.
-# It exists to test the contract for real: if this installs the app on first boot, DeskOS's
-# FlatpakSet can materialize on Ubuntu 26.04.
+# The Flathub remote, so the base is useful on its own. An organization's own
+# remotes come from DeskOS's FlatpakRemote resource, which the plan renders.
+#
+# The preinstall unit and the preinstall.d entries are deliberately absent: DeskOS
+# emits deskos-flatpak-preinstall.service itself, with the applications a FlatpakSet
+# declares. A replica here would have the same unit name and would mask whether the
+# rendered one works.
 RUN set -eux; \
     install -d /etc/flatpak/remotes.d; \
-    printf '[Flatpak Repo]\nTitle=Flathub\nUrl=https://dl.flathub.org/repo/\nHomepage=https://flathub.org/\n' > /etc/flatpak/remotes.d/flathub.flatpakrepo; \
-    install -d /usr/share/flatpak/preinstall.d; \
-    printf '[Flatpak Preinstall org.gnome.Calculator]\nBranch=stable\nIsRuntime=false\n' > /usr/share/flatpak/preinstall.d/org.gnome.Calculator.preinstall; \
-    printf '[Unit]\nDescription=Install operating system Flatpaks declared in preinstall.d\nDocumentation=man:flatpak-preinstall(1)\nWants=network-online.target\nAfter=network-online.target multi-user.target\n\n[Service]\nType=exec\nExecStart=/usr/bin/flatpak preinstall --system --assumeyes --noninteractive\n\n[Install]\nWantedBy=multi-user.target\n' > /usr/lib/systemd/system/deskos-flatpak-preinstall.service; \
-    ln -sf /usr/lib/systemd/system/deskos-flatpak-preinstall.service /etc/systemd/system/multi-user.target.wants/deskos-flatpak-preinstall.service
+    printf '[Flatpak Repo]\nTitle=Flathub\nUrl=https://dl.flathub.org/repo/\nHomepage=https://flathub.org/\n' > /etc/flatpak/remotes.d/flathub.flatpakrepo
 
 LABEL containers.bootc 1
 

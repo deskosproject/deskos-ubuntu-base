@@ -43,11 +43,13 @@ Everything below is **measured** (the recipe was built, installed to disk and bo
    `flatpak preinstall` does not exist, so DeskOS's preinstallation mechanism cannot materialize.
    The PPA publishes `1.18.4-1~flatpak1~26.04.1` and `flatpak preinstall` works.
    **Caveat: it is a third-party PPA — a supply-chain decision, not Canonical's archive.**
-5. **Locale generated in the image** (`es_EC.UTF-8`) plus timezone and keyboard. It cannot be done
-   at runtime: `/usr/lib/locale` lives under a read-only `/usr`.
-   **Design pending: locale, timezone and keyboard must be selectable per region and per user, not
-   fixed for the whole fleet.**
-6. **First-login wizard suppressed** (`gnome-initial-setup` markers).
+5. **Locales generated in the image** (`en_US.UTF-8` and `es_EC.UTF-8`), defaulting to
+   `en_US.UTF-8`. It cannot be done at runtime: `/usr/lib/locale` lives under a read-only `/usr`.
+   The timezone and the keyboard are **not** pinned: GNOME Initial Setup chooses them per user at
+   first boot.
+6. **No account, no autologin, and GNOME Initial Setup left enabled.** The base creates no user, so
+   the wizard creates one and offers the language, the timezone and the keyboard. An organization
+   that provisions accounts itself suppresses the wizard in its own layer.
 7. **`/var` skeleton that `rm -rf /var` destroys.** Packages install directories under `/var`
    (snapd: `apparmor/snap-confine`, `void`, `hostfs`, `firstboot`, ...; ubuntu-advantage:
    `/var/lib/ubuntu-advantage`) and the recipe used to delete them. Measured effects:
@@ -80,7 +82,7 @@ Everything below is **measured** (the recipe was built, installed to disk and bo
 | `bootc container lint` | 12 checks, 3 warnings |
 | Install to disk (`--composefs-backend`) | OK |
 | Boot with `verity=require` | OK |
-| GNOME + autologin | OK |
+| GNOME + autologin | OK, measured **before** the autologin was removed; not re-measured since |
 | `bootc switch` / `rollback` | OK. Note: rollback **needs two reboots** (the operation runs at the end of boot; the next boot uses the previous image). `/var` and `/etc` persist in both directions. |
 | flatpak: runs apps | OK (bwrap under the `unpriv_bwrap` profile) |
 | DeskOS `FlatpakSet` (preinstall on first boot) | OK with flatpak 1.18.4 |
@@ -94,8 +96,8 @@ Everything below is **measured** (the recipe was built, installed to disk and bo
 ## Known blockers
 
 - **Home outside `/home`.** Snap requires the home under `/home`, and the bootc/ostree layout uses
-  `/var/home`. Since `/home` is a bind mount of `/var/home`, setting the user's home to `/home/poc`
-  solves it without moving files. **Pending: decide it in the recipe, not by hand in the VM.**
+  `/var/home`. The recipe keeps `/home` as a bind mount of `/var/home`, so an account created with
+  the default home path (`/home/<user>`) gets one snap can use, and no files are moved.
 - **Secure boot**: the stock kernel is signed, but the install uses `systemd-boot`, which is not.
   It requires a signed shim+grub chain or custom keys.
 - **GPU inside the flatpak sandbox**: there were MESA/EGL errors (`failed to create dri2 screen`),
