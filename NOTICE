@@ -1,0 +1,10 @@
+deskos-ubuntu-base
+Copyright 2025 tulilirockz (jmarrero/ubuntu-bootc)
+Copyright 2026 the Project DeskOS
+
+This product includes software developed as part of jmarrero/ubuntu-bootc and
+bootcrew/mono, both licensed under the Apache License, Version 2.0 (see LICENSE).
+
+It is a derivative work of jmarrero/ubuntu-bootc, taken at commit
+7dd974209f2278307e13be4dc9e449020802ae64. What changed, and why, is recorded in
+README.md under "What we changed from upstream, and why".
