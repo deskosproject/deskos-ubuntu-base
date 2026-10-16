@@ -39,17 +39,25 @@ Everything below is **measured** (the recipe was built, installed to disk and bo
    Linux 7.0 fsverity regression; Ubuntu already merged stable v7.0.7 into `7.0.0-38.38`
    (`ovl: fix verity lazy-load guard broken by fsverity_active()`), and booting with the stock
    kernel was verified: composefs with `verity=require` boots fine.
-4. **flatpak >= 1.17 from the Flatpak team PPA.** The 26.04 archive ships **1.16.6** and
-   `flatpak preinstall` does not exist, so DeskOS's preinstallation mechanism cannot materialize.
-   The PPA publishes `1.18.4-1~flatpak1~26.04.1` and `flatpak preinstall` works.
-   **Caveat: it is a third-party PPA — a supply-chain decision, not Canonical's archive.**
+4. **Flatpak is not in the image, and the base carries no third-party apt source.** Measured: the
+   base's only apt sources are `archive.ubuntu.com` and `security.ubuntu.com`, with Ubuntu's own
+   keyrings. The 26.04 archive publishes Flatpak **1.16.6**, and no suite of 26.04 carries a newer
+   one (backports included), while `flatpak preinstall` — the mechanism a system `FlatpakSet` needs
+   — only exists since 1.17. The spike got a newer one from the Flatpak team PPA, which is not
+   Canonical's archive; carrying a moving third-party PPA inside a base is a supply-chain decision
+   this project declined (ADR 0010). A platform that wants a system Flatpak channel needs a base
+   that carries one and says so, and `deskos-core` declares that Ubuntu offers none.
 5. **Locales generated in the image** (`en_US.UTF-8` and `es_EC.UTF-8`), defaulting to
    `en_US.UTF-8`. It cannot be done at runtime: `/usr/lib/locale` lives under a read-only `/usr`.
    The timezone and the keyboard are **not** pinned: GNOME Initial Setup chooses them per user at
    first boot.
-6. **No account, no autologin, and GNOME Initial Setup left enabled.** The base creates no user, so
-   the wizard creates one and offers the language, the timezone and the keyboard. An organization
-   that provisions accounts itself suppresses the wizard in its own layer.
+6. **No usable account, no autologin, and GNOME Initial Setup left enabled.** No account can log in:
+   the base creates none, and the `ubuntu` account the official Ubuntu container image ships is
+   inherited as it is — password locked (`!` in `/etc/shadow`), no home directory and no
+   `/etc/sudoers` entry, although it is a member of the `sudo` group. GDM does not offer it (no
+   home), and the wizard runs and offers to create the first user with the language, the timezone and
+   the keyboard. An organization that provisions accounts itself suppresses the wizard in its own
+   layer.
 7. **`/var` skeleton that `rm -rf /var` destroys.** Packages install directories under `/var`
    (snapd: `apparmor/snap-confine`, `void`, `hostfs`, `firstboot`, ...; ubuntu-advantage:
    `/var/lib/ubuntu-advantage`) and the recipe used to delete them. Measured effects:
@@ -59,11 +67,13 @@ Everything below is **measured** (the recipe was built, installed to disk and bo
    that: `apparmor` active on first boot and **snap Firefox running**. The mechanism is general:
    before the wipe the `/var` skeleton is saved (directories only, with mode and owner) and
    restored afterwards.
-8. **`/var/lib/flatpak` excluded from that restore.** Restoring directories only leaves
-   half-initialized what needs to be initialized coherently: with `/var/lib/flatpak/repo` present
-   but missing its `config` file, `flatpak preinstall` fails with `opening repo: openat(config): No
-   such file or directory`. If the directory does not exist, flatpak creates the whole thing.
-   **Measured: with the exclusion, DeskOS's unit installs the app.**
+8. **`/var/lib/flatpak` stays excluded from that restore, as the standing example of a general
+   rule.** Restoring directories only leaves half-initialized what a tool has to initialize
+   coherently: with `/var/lib/flatpak/repo` present but its `config` file missing, flatpak fails with
+   `opening repo: openat(config): No such file or directory`, while with the directory absent it
+   creates the whole thing. Flatpak itself is no longer in the image (item 4); the rule stays for the
+   next tool that behaves this way, and the general form is: a `/var` directory a tool fails on with
+   "no such file" over a config file inside it belongs in this list.
 9. **The package database is image content, not state** (ADR 0015). `rm -rf /var` took
    `/var/lib/dpkg` with it, so a derived image installed blindly: installing `curl` pulled **35
    packages, 34 of them already on disk**, because dpkg knew nothing. The database is now copied into
@@ -78,20 +88,25 @@ Everything below is **measured** (the recipe was built, installed to disk and bo
 
 | what | result |
 |---|---|
-| Build | OK (with the libclang fix) |
-| `bootc container lint` | 12 checks, 3 warnings |
-| Install to disk (`--composefs-backend`) | OK |
-| Boot with `verity=require` | OK |
+| Build | OK (with the libclang fix). Rebuilt 2026-10-16 with no Flatpak and no third-party apt source |
+| `bootc container lint` | 11 checks passed, 1 skipped, 3 warnings — the same lint set as before, on the 2026-10-16 rebuild |
+| Install to disk (`--composefs-backend`) | OK — 2026-10-16 rebuild, installed out of a compressed OCI layout |
+| Boot from digest-verified ComposeFS | OK — the 2026-10-16 rebuild's ESP entry asks for it (`composefs.digest=…`); the mount flags seen inside the guest were measured on an earlier build, so `verity=require` as such is not re-asserted here |
+| Boot to GNOME Initial Setup | OK — 2026-10-16 rebuild: the disk boots to the first-boot wizard |
+| No usable account | OK — the image carries no account that can log in. The upstream container image's `ubuntu` account (uid 1000, in the `sudo` group) is inherited, but its password is locked, it has no home and no `/etc/sudoers` entry; GDM does not offer it |
+| Flatpak | **not in the image** (item 4): 26.04 has no `flatpak preinstall`, and carrying the PPA that would provide one is declined. Earlier runs, still with that PPA, measured Flatpak 1.18.4 running apps (bwrap under the `unpriv_bwrap` profile) and installing one at first boot; that is no longer this base's state |
 | GNOME + autologin | OK, measured **before** the autologin was removed; not re-measured since |
-| `bootc switch` / `rollback` | OK. Note: rollback **needs two reboots** (the operation runs at the end of boot; the next boot uses the previous image). `/var` and `/etc` persist in both directions. |
-| flatpak: runs apps | OK (bwrap under the `unpriv_bwrap` profile) |
-| DeskOS `FlatpakSet` (preinstall on first boot) | OK with flatpak 1.18.4 |
-| snap: trivial apps (`hello-world`) | OK |
-| **snap: Firefox** | **OK** — `/snap/firefox/9057/usr/lib/firefox/firefox` running, 18 AppArmor profiles, UI in Spanish |
-| `apparmor.service` on first boot | OK |
-| **Package database** | OK — `dpkg -l` reports 1519 packages from `/usr/lib/sysimage/dpkg`; a derived image installs incrementally (`curl`: 1 package, `jq`: 0) |
+| `bootc switch` / `rollback` | OK, measured on an earlier build. Note: rollback **needs two reboots** (the operation runs at the end of boot; the next boot uses the previous image). `/var` and `/etc` persist in both directions. |
+| snap: trivial apps (`hello-world`) | OK, measured on an earlier build |
+| **snap: Firefox** | **OK**, measured on an earlier build — `/snap/firefox/9057/usr/lib/firefox/firefox` running, 18 AppArmor profiles, UI in Spanish |
+| `apparmor.service` on first boot | OK, measured on an earlier build |
+| **Package database** | `dpkg -l` reports **1509** packages from `/usr/lib/sysimage/dpkg` on the 2026-10-16 rebuild; the incremental-install measurement (`curl`: 1 package, `jq`: 0) is from an earlier build |
 | Secure boot | not verified (the kernel is signed, `systemd-boot` is not) |
 | Intune / CrowdStrike / VPN | **not verifiable outside a real corporate environment** |
+
+Rows marked "earlier build" were measured on builds of this recipe that still carried
+Flatpak. The 2026-10-16 rebuild changed which packages are installed (item 4) and
+nothing about those rows, but until they are re-run they are history, not status.
 
 ## Known blockers
 
@@ -100,14 +115,15 @@ Everything below is **measured** (the recipe was built, installed to disk and bo
   the default home path (`/home/<user>`) gets one snap can use, and no files are moved.
 - **Secure boot**: the stock kernel is signed, but the install uses `systemd-boot`, which is not.
   It requires a signed shim+grub chain or custom keys.
-- **GPU inside the flatpak sandbox**: there were MESA/EGL errors (`failed to create dri2 screen`),
-  i.e. software rendering.
 - **The ESP is not where `bootctl` looks for it.** At boot we see
   `bootctl: Couldn't find EFI system partition, skipping.`, so bootc cannot manage the EFI boot
   entries. Boot order still works (through bootc's own mechanism), but this deserves investigation:
   on real hardware with secure boot it matters.
-- **Upstream tmpfiles syntax bug**: `d ... root root -` produces `Invalid age '-'` (lines of type
-  `d` do not take an age field like that). It shows up on every boot.
+- **This recipe's own tmpfiles lines**: the `/var` skeleton is written by two `printf`s that did not end
+  in a newline, so the last line of the first one and the first line of the next were concatenated in
+  the image: `d /var/snap 0755 root root -d /var/lib/snapd/snap 0755 root root -`, which systemd
+  reports as `Invalid age '-d'` on every boot. The age field `-` is fine (it means "do not clean up");
+  the missing newline was the bug. Fixed 2026-10-16 by ending both `printf`s in `\n`.
 
 ## Operational note (for whoever builds this)
 
@@ -116,28 +132,58 @@ Everything below is **measured** (the recipe was built, installed to disk and bo
 - **It consumes tens of GB.** The lab reached 100% disk with accumulated images and test disks;
   clean up (`podman rmi`, test disks) before each cycle.
 - Changing the `bootc` pin (or any builder input) invalidates the cache: expect a long build.
+- **Publishing takes OCI and an explicit tag.** `podman push --format=oci` (the same
+  compression constraint as the install), and move `:latest` with an explicit `podman tag`: a
+  local `latest` does not follow a new build. Push from the same storage the build used.
 
 ## Build and test
 
-    podman build -f Containerfile -t ubuntu-bootc:local .
+Everything below works in the same podman storage. A build and an install that do
+not share storage do not see the same images: build with `sudo` too, or carry the
+image across with `podman save | sudo podman load`.
 
-    # layers must end up compressed: the composefs import rejects `vnd.oci.image.layer.v1.tar`
-    skopeo inspect --raw containers-storage:localhost/ubuntu-bootc:local | python3 -c \
+    sudo podman build -f Containerfile -t localhost/ubuntu-bootc:local .
+
+    # `podman build` leaves layers uncompressed
+    # (`application/vnd.oci.image.layer.v1.tar`) and the composefs import rejects
+    # them with "Invalid splitstream content type". Recompress into an OCI layout,
+    # which is also what the install mounts as its source:
+    sudo skopeo copy containers-storage:localhost/ubuntu-bootc:local oci:/var/tmp/ubuntu-oci:local
+    sudo skopeo inspect --raw oci:/var/tmp/ubuntu-oci:local | python3 -c \
       "import json,sys;from collections import Counter;print(Counter(l['mediaType'] for l in json.load(sys.stdin)['layers']))"
 
     truncate -s 30G disk.raw
+    # `--source-imgref` is where the install reads the image from; `--target-imgref`
+    # is where the installed system will look for its updates. The two are different
+    # questions, and the target here is this base's own reference because this
+    # command installs the base. Someone installing a *derived* image must point the
+    # target at that derivative's published reference: pointing it at the base would
+    # make the next update replace the derivative with the base. Leaving the target
+    # unset records the source (a lab path) as the update source, and then
+    # `bootc upgrade` and the image update timer have nothing valid to stage.
     sudo podman run --rm --privileged --pid=host --security-opt label=type:unconfined_t \
-      -v /dev:/dev -v /var/lib/containers:/var/lib/containers -v $PWD:/output \
-      ubuntu-bootc:local bootc install to-disk --via-loopback /output/disk.raw \
+      -v /dev:/dev -v /var/lib/containers:/var/lib/containers \
+      -v /var/tmp/ubuntu-oci:/src-oci:ro -v $PWD:/output \
+      localhost/ubuntu-bootc:local bootc install to-disk --via-loopback /output/disk.raw \
+      --source-imgref oci:/src-oci:local \
+      --target-imgref quay.io/deskos/deskos-ubuntu-base:26.04 \
       --composefs-backend --bootloader systemd --wipe --filesystem ext4 --allow-missing-verity
 
-    # boot with a virtual GPU: without it there is no compositor
+    # boot with a virtual GPU: without it there is no compositor. The firmware's
+    # variable store must be a writable copy of the file shipped by edk2, never that
+    # read-only file itself.
+    cp /usr/share/edk2/ovmf/OVMF_VARS.fd .
     qemu-kvm -machine q35,accel=kvm -cpu host -m 6G -smp 4 \
       -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/ovmf/OVMF_CODE.fd \
       -drive if=pflash,format=raw,file=OVMF_VARS.fd \
       -drive file=disk.raw,format=raw,if=virtio \
       -vga none -device virtio-vga -vnc 127.0.0.1:5 \
       -monitor unix:mon.sock,server,nowait
+
+    # That smoke test boots without a NIC, which is all it needs. A guest that has to
+    # reach the network — cloud-init, a user provisioning the machine — also needs
+    # one: add `-netdev user,id=n0 -device virtio-net-pci,netdev=n0`, which the
+    # image's `Name=e*` DHCP profile covers. That networked path was not measured here.
 
 ## Context
 
