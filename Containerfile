@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+#
 # Ubuntu 26.04 LTS bootc + GNOME.
 #
 # Built on jmarrero/ubuntu-bootc (Apache-2.0) with the changes measured during the DeskOS spike.

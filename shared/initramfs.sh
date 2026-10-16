@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# From bootcrew/mono and jmarrero/ubuntu-bootc (both Apache-2.0), modified by the
+# Project DeskOS. What changed is recorded in README.md, "What we changed from
+# upstream, and why".
 
 set -xeuo pipefail
 
