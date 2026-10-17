@@ -1,0 +1,159 @@
+name: publish
+
+# Manual only. Builds the base, lints it, installs it to a disk and boots it —
+# the first-boot wizard has to be the session that comes up — and only then does
+# it push the image to quay.io and sign it. This is the manual process
+# (README.md, "Build and test") in one place, so that publishing stops being a
+# hand step and never publishes something that was merely built.
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Push the built and booted base to quay.io and sign it
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  # Keyless cosign: Fulcio issues a short-lived certificate from the workflow's
+  # OIDC identity, and Rekor records the signature.
+  id-token: write
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+env:
+  IMAGE: localhost/ubuntu-bootc:local
+  DEST: quay.io/deskos/deskos-ubuntu-base
+  # The large artifacts (image, OCI layout, disk, overlays) live on /mnt; the
+  # root disk is small and the build is heavy.
+  WORK: /mnt/deskos-work
+  # The harness that boots the disk and asks the guest, pinned like any other
+  # input. The base is judged with the same rule as the workstations built on it.
+  HARNESS_REPO: deskosproject/deskos-core
+  HARNESS_REF: 45902f41cd1269319002adeab5f48a47c08f1149
+
+jobs:
+  base:
+    runs-on: ubuntu-24.04
+    # The base compiles bootc from a pinned commit: a long build.
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Put container storage and the large files on /mnt
+        run: |
+          df -h / /mnt
+          sudo mkdir -p /mnt/containers "$WORK" /var/lib/containers /etc/containers
+          sudo mount --bind /mnt/containers /var/lib/containers
+          printf '[storage]\ndriver = "overlay"\nrunroot = "/run/containers/storage"\ngraphroot = "/var/lib/containers/storage"\n' | sudo tee /etc/containers/storage.conf
+          sudo chown "$(id -u):$(id -g)" "$WORK"
+
+      - name: Enable KVM for the runner user
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Install QEMU, OVMF and skopeo
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils ovmf skopeo
+
+      - name: Build the base
+        timeout-minutes: 150
+        run: |
+          # This compiles bootc from the commit shared/build.sh pins: a heavy
+          # build. Free memory first; LTO has died with a SIGSEGV under load.
+          sudo podman build -f Containerfile -t "$IMAGE" .
+
+      - name: bootc container lint
+        run: sudo podman run --rm "$IMAGE" bootc container lint
+
+      - name: Recompress into an OCI layout
+        run: |
+          # podman build leaves layers uncompressed and the composefs import
+          # rejects them; this is also what the install mounts as its source.
+          sudo skopeo copy "containers-storage:$IMAGE" "oci:$WORK/oci:local"
+
+      - name: Install to a disk
+        timeout-minutes: 30
+        run: |
+          truncate -s 30G "$WORK/disk.raw"
+          sudo podman run --rm --privileged --pid=host --security-opt label=type:unconfined_t \
+            -v /dev:/dev -v /var/lib/containers:/var/lib/containers \
+            -v "$WORK/oci:/src-oci:ro" -v "$WORK:/output" \
+            "$IMAGE" bootc install to-disk --via-loopback /output/disk.raw \
+            --source-imgref oci:/src-oci:local \
+            --target-imgref "$DEST:26.04" \
+            --composefs-backend --bootloader systemd --wipe --filesystem ext4 --allow-missing-verity
+
+      - name: Check out the harness
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.HARNESS_REPO }}
+          ref: ${{ env.HARNESS_REF }}
+          path: harness
+
+      - name: Boot check (unmodified disk)
+        timeout-minutes: 20
+        run: |
+          # No --expect-splash: the base carries Ubuntu's own boot experience.
+          python3 harness/tests/vm/bootcheck.py --disk "$WORK/disk.raw" \
+            --out "$WORK/bootcheck" --hash-disk --boot-timeout 420 --shutdown-timeout 120
+
+      - name: First-boot check (the wizard is the session that came up)
+        timeout-minutes: 25
+        run: |
+          python3 harness/tests/vm/firstbootcheck.py --disk "$WORK/disk.raw" \
+            --out "$WORK/firstboot" --boot-timeout 900
+
+      - name: Install cosign
+        if: inputs.publish && github.ref == 'refs/heads/main'
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: 'v3.1.3'
+
+      - name: Publish, sign and attest
+        # Main only: a dispatch from a branch builds and boots, and stops there.
+        if: inputs.publish && github.ref == 'refs/heads/main'
+        env:
+          QUAY_ROBOT_USERNAME: ${{ secrets.QUAY_ROBOT_USERNAME }}
+          QUAY_ROBOT_TOKEN: ${{ secrets.QUAY_ROBOT_TOKEN }}
+        run: |
+          printf '%s' "$QUAY_ROBOT_TOKEN" | sudo podman login quay.io --username "$QUAY_ROBOT_USERNAME" --password-stdin
+          # Push the immutable commit tag, sign and verify it, and only then move
+          # :26.04 and :latest: a failed signature never leaves them pointing at
+          # an unsigned image. Publishing uses OCI and an explicit tag, as the
+          # recipe documents.
+          sudo podman tag "$IMAGE" "$DEST:$GITHUB_SHA"
+          sudo podman push --format=oci --digestfile digest.txt "$DEST:$GITHUB_SHA"
+          digest="$(tr -d '\n\r' < digest.txt)"
+          ref="$DEST@$digest"
+          printf '%s' "$QUAY_ROBOT_TOKEN" | cosign login quay.io --username "$QUAY_ROBOT_USERNAME" --password-stdin
+          cosign sign --yes "$ref"
+          cosign verify "$ref" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity-regexp '^https://github\.com/deskosproject/deskos-ubuntu-base/' | tee cosign-verify.txt
+          for tag in 26.04 latest; do
+            sudo podman tag "$IMAGE" "$DEST:$tag"
+            sudo podman push --format=oci "$DEST:$tag"
+          done
+          sudo podman logout quay.io
+          echo "Published and signed $ref" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ubuntu-base-evidence
+          path: |
+            ${{ env.WORK }}/bootcheck
+            ${{ env.WORK }}/firstboot
+            digest.txt
+            cosign-verify.txt
+          retention-days: 14
+          if-no-files-found: warn
