@@ -1,10 +1,20 @@
 name: publish
 
-# Manual only. Builds the base, lints it, installs it to a disk and boots it —
-# the first-boot wizard has to be the session that comes up — and only then does
-# it push the image to quay.io and sign it. This is the manual process
-# (README.md, "Build and test") in one place, so that publishing stops being a
+# Manual only. The gate, in full, is: build, `bootc container lint`, install to a
+# disk with the composefs backend, and boot that disk with the DeskOS harness — a
+# stable graphical screen, and the first-boot wizard as the session that comes up.
+# Only then does it push the image to quay.io and sign it. This is the manual
+# process (README.md, "Build and test") in one place, so publishing stops being a
 # hand step and never publishes something that was merely built.
+#
+# It is a **boot** gate, not a supply-chain gate: the image is not SBOM'd or
+# scanned here. The base is an input to the workstations built on it, and those
+# carry the supply-chain gate in deskos-core; whether the base needs its own scan
+# is a decision for the owner, not something this workflow implies.
+#
+# It has not run yet: the first dispatch is its first evidence. A dispatch from a
+# branch (with `publish` off) builds and boots and stops there; publishing is
+# gated to `main`.
 
 on:
   workflow_dispatch:
@@ -125,24 +135,53 @@ jobs:
           QUAY_ROBOT_TOKEN: ${{ secrets.QUAY_ROBOT_TOKEN }}
         run: |
           printf '%s' "$QUAY_ROBOT_TOKEN" | sudo podman login quay.io --username "$QUAY_ROBOT_USERNAME" --password-stdin
-          # Push the immutable commit tag, sign and verify it, and only then move
-          # :26.04 and :latest: a failed signature never leaves them pointing at
-          # an unsigned image. Publishing uses OCI and an explicit tag, as the
-          # recipe documents.
-          sudo podman tag "$IMAGE" "$DEST:$GITHUB_SHA"
-          sudo podman push --format=oci --digestfile digest.txt "$DEST:$GITHUB_SHA"
-          digest="$(tr -d '\n\r' < digest.txt)"
+          # Publish the exact OCI layout the disk install mounted, so the bytes
+          # that were booted are the bytes published; `--preserve-digests` refuses
+          # to rewrite the manifest on the way.
+          tested="$(sudo skopeo inspect --format '{{.Digest}}' "oci:$WORK/oci:local")"
+          # The commit tag is provenance, not a moving tag: a re-dispatch of the
+          # same commit must publish the same bytes. If it finds another digest
+          # there — the base tracks a floating ubuntu:resolute and APT moves —
+          # it fails instead of moving the tag.
+          if sudo skopeo inspect "docker://$DEST:$GITHUB_SHA" >/dev/null 2>&1; then
+            existing="$(sudo skopeo inspect --format '{{.Digest}}' "docker://$DEST:$GITHUB_SHA")"
+            [ "$existing" = "$tested" ] || {
+              echo "::error::$DEST:$GITHUB_SHA already published $existing; this build is $tested. The commit tag is not moved; publish the new build under its own commit."
+              exit 1
+            }
+            echo "Already published as $tested" >> "$GITHUB_STEP_SUMMARY"
+          else
+            sudo skopeo copy --preserve-digests "oci:$WORK/oci:local" "docker://$DEST:$GITHUB_SHA"
+          fi
+          digest="$(sudo skopeo inspect --format '{{.Digest}}' "docker://$DEST:$GITHUB_SHA")"
+          [ "$digest" = "$tested" ] || {
+            echo "::error::$DEST:$GITHUB_SHA is $digest, not the tested $tested"
+            exit 1
+          }
           ref="$DEST@$digest"
           printf '%s' "$QUAY_ROBOT_TOKEN" | cosign login quay.io --username "$QUAY_ROBOT_USERNAME" --password-stdin
           cosign sign --yes "$ref"
           cosign verify "$ref" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             --certificate-identity-regexp '^https://github\.com/deskosproject/deskos-ubuntu-base/' | tee cosign-verify.txt
+          # The moving tags move only after the signature is verified, and only
+          # when the registry hands back the digest that was signed.
           for tag in 26.04 latest; do
-            sudo podman tag "$IMAGE" "$DEST:$tag"
-            sudo podman push --format=oci "$DEST:$tag"
+            sudo skopeo copy --preserve-digests "oci:$WORK/oci:local" "docker://$DEST:$tag"
+            moved="$(sudo skopeo inspect --format '{{.Digest}}' "docker://$DEST:$tag")"
+            [ "$moved" = "$digest" ] || {
+              echo "::error::$DEST:$tag is $moved, not the signed $digest"
+              exit 1
+            }
           done
           sudo podman logout quay.io
+          # What was published and what was tested: the evidence that they are
+          # the same digest.
+          {
+            echo "ref=$ref"
+            echo "signed_digest=$digest"
+            echo "tested_oci_digest=$tested"
+          } > applied-digests.txt
           echo "Published and signed $ref" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload evidence
@@ -153,7 +192,7 @@ jobs:
           path: |
             ${{ env.WORK }}/bootcheck
             ${{ env.WORK }}/firstboot
-            digest.txt
+            applied-digests.txt
             cosign-verify.txt
           retention-days: 14
           if-no-files-found: warn
