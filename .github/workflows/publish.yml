@@ -127,7 +127,7 @@ jobs:
         with:
           cosign-release: 'v3.1.3'
 
-      - name: Publish, sign and attest
+      - name: Publish and sign
         # Main only: a dispatch from a branch builds and boots, and stops there.
         if: inputs.publish && github.ref == 'refs/heads/main'
         env:
@@ -143,14 +143,19 @@ jobs:
           # same commit must publish the same bytes. If it finds another digest
           # there — the base tracks a floating ubuntu:resolute and APT moves —
           # it fails instead of moving the tag.
-          if sudo skopeo inspect "docker://$DEST:$GITHUB_SHA" >/dev/null 2>&1; then
-            existing="$(sudo skopeo inspect --format '{{.Digest}}' "docker://$DEST:$GITHUB_SHA")"
+          if existing="$(sudo skopeo inspect --format '{{.Digest}}' "docker://$DEST:$GITHUB_SHA" 2>inspect.err)"; then
             [ "$existing" = "$tested" ] || {
               echo "::error::$DEST:$GITHUB_SHA already published $existing; this build is $tested. The commit tag is not moved; publish the new build under its own commit."
               exit 1
             }
             echo "Already published as $tested" >> "$GITHUB_STEP_SUMMARY"
           else
+            # A missing tag and an unreachable or unauthorized registry both make
+            # inspect fail, and only the first leaves the tag free to take.
+            grep -qiE 'manifest unknown|name unknown|not found' inspect.err || {
+              echo "::error::could not read $DEST:$GITHUB_SHA: $(cat inspect.err)"
+              exit 1
+            }
             sudo skopeo copy --preserve-digests "oci:$WORK/oci:local" "docker://$DEST:$GITHUB_SHA"
           fi
           digest="$(sudo skopeo inspect --format '{{.Digest}}' "docker://$DEST:$GITHUB_SHA")"
